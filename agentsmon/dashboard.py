@@ -13,6 +13,7 @@ import base64
 import hashlib
 import hmac
 import json
+from pathlib import Path
 import os
 import shutil
 import subprocess
@@ -54,7 +55,7 @@ PAGE = r"""<!DOCTYPE html><html lang="en"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Agents Monitoring</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🤖</text></svg>">
-<script src="https://cdn.tailwindcss.com"></script>
+<script src="/static/tailwind.js"></script>
 <style>.bar{transition:opacity .15s ease}.bar:hover{opacity:.65}.copied-flash{color:#059669!important;transition:color .1s}#toast{transition:opacity .2s ease}</style>
 </head><body class="bg-slate-50 text-slate-800 antialiased">
 <div id="toast" class="fixed left-1/2 bottom-5 -translate-x-1/2 bg-slate-800 text-white text-sm px-2 py-1.5 rounded-md shadow-lg opacity-0 pointer-events-none" style="z-index:50">&nbsp;</div>
@@ -485,6 +486,26 @@ def _probe_loop(stop: threading.Event) -> None:
         stop.wait(int(config.load().get("probe", {}).get("interval_seconds", 60)))
 
 
+_STATIC_TAILWIND = (Path(__file__).parent / "static" / "tailwind.js").read_bytes()
+
+
+def _loopback(host: str) -> bool:
+    return host in ("127.0.0.1", "localhost", "::1")
+
+
+def require_auth_or_die(host: str, cfg: dict) -> None:
+    """Fail closed: a dashboard reachable from anything but loopback must have HTTP auth
+    configured (audit 2026-09-08). Without it anyone on that network could stop or restart
+    agents. `agentsmon wizard` sets dashboard.auth; loopback-only installs stay optional."""
+    auth = cfg.get("dashboard", {}).get("auth") or {}
+    if _loopback(host) or (auth.get("user") and auth.get("pwhash")):
+        return
+    raise SystemExit(
+        f"refusing to listen on {host} without dashboard.auth (user + pwhash) in the config — "
+        "the page can stop and restart agents. Bind 127.0.0.1 or set the password via `agentsmon wizard`."
+    )
+
+
 def serve(host: str, port: int) -> None:
     # Bring an older config up to the current schema on startup (e.g. fold per-daemon availability
     # cards into the synthetic Multi-Agent System card). The dashboard restarts on every update,
@@ -497,6 +518,7 @@ def serve(host: str, port: int) -> None:
     except Exception:
         pass
     cfg = config.load()
+    require_auth_or_die(host, cfg)
     poll = cfg.get("dashboard", {}).get("poll_seconds", 15)
     page = PAGE.replace("POLL", str(poll)).encode()
     auth = cfg.get("dashboard", {}).get("auth") or {}
@@ -526,6 +548,13 @@ def serve(host: str, port: int) -> None:
                 body = page
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
+            elif self.path == "/static/tailwind.js":
+                # Served from the package, not cdn.tailwindcss.com: a third party that can change
+                # a script running on this origin could drive the control endpoint (audit 2026-09-08).
+                body = _STATIC_TAILWIND
+                self.send_response(200)
+                self.send_header("Content-Type", "application/javascript; charset=utf-8")
+                self.send_header("Cache-Control", "public, max-age=86400")
             else:
                 self.send_response(404)
                 self.end_headers()
