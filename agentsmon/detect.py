@@ -192,8 +192,8 @@ def _session_cwd(name: str) -> str | None:
     return r.stdout.strip() if (r and r.returncode == 0 and r.stdout.strip()) else None
 
 
-def _rollout_model(path: str) -> str | None:
-    """Latest real turn model, scanning backwards with an 8 MiB read budget."""
+def _recent_json_records(path: str):
+    """Complete JSON records, newest first, with an 8 MiB read budget."""
     try:
         with open(path, "rb") as fh:
             pos = fh.seek(0, 2)
@@ -211,13 +211,20 @@ def _rollout_model(path: str) -> str | None:
                         row = json.loads(line)
                     except (ValueError, UnicodeError):
                         continue
-                    if not isinstance(row, dict) or row.get("type") != "turn_context":
-                        continue
-                    model = (row.get("payload") or {}).get("model")
-                    if isinstance(model, str) and model:
-                        return _pretty_model(model)
+                    if isinstance(row, dict):
+                        yield row
     except OSError:
-        return None
+        return
+
+
+def _rollout_model(path: str) -> str | None:
+    """Latest real turn model, scanning backwards with an 8 MiB read budget."""
+    for row in _recent_json_records(path):
+        if row.get("type") != "turn_context":
+            continue
+        model = (row.get("payload") or {}).get("model")
+        if isinstance(model, str) and model:
+            return _pretty_model(model)
     return None
 
 
@@ -330,19 +337,14 @@ def _pretty_claude_model(raw: str) -> str:
 
 
 def _claude_model_from_transcript(path: str) -> str | None:
-    """The model a Claude Code session is actually running, from the tail of its transcript (each
-    assistant turn records ``message.model``); we take the latest real one, ignoring synthetic."""
-    try:
-        size = os.path.getsize(path)
-        with open(path, "rb") as fh:
-            if size > 65536:
-                fh.seek(size - 65536)
-            data = fh.read().decode("utf-8", "ignore")
-    except OSError:
-        return None
-    for m in reversed(re.findall(r'"model"\s*:\s*"([^"]+)"', data)):
-        if m and m != "<synthetic>":
-            return _pretty_claude_model(m)
+    """Latest main-session assistant model, including before a long compaction record."""
+    for row in _recent_json_records(path):
+        if row.get("type") != "assistant" or row.get("isSidechain"):
+            continue
+        message = row.get("message")
+        model = message.get("model") if isinstance(message, dict) else None
+        if isinstance(model, str) and model and model != "<synthetic>":
+            return _pretty_claude_model(model)
     return None
 
 
@@ -364,6 +366,34 @@ def claude_project_dirs(cwd: str) -> list[Path]:
             videne.add(name)
             formy.append(base / name)
     return formy
+
+
+def _claude_info_for_processes(pids: list[int], cwd: str,
+                               sid: str | None = None) -> tuple[str | None, str | None]:
+    """Resolve the PID's registered session, or its explicit resume id on older clients."""
+    for pid in pids:
+        try:
+            meta = json.loads((Path.home() / ".claude" / "sessions" / f"{pid}.json").read_text("utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(meta, dict) or meta.get("pid") != pid:
+            continue
+        registered = meta.get("sessionId")
+        if isinstance(registered, str) and UUID_RE.fullmatch(registered):
+            sid = registered
+            cwd = meta.get("cwd") or cwd
+            break
+    if not sid or not UUID_RE.fullmatch(sid):
+        return None, None
+    for directory in claude_project_dirs(cwd) if cwd else []:
+        path = directory / f"{sid}.jsonl"
+        if path.is_file():
+            return sid, _claude_model_from_transcript(str(path))
+    # A session may change directory after launch. Its UUID remains authoritative.
+    for path in (Path.home() / ".claude" / "projects").glob(f"**/{sid}.jsonl"):
+        if "subagents" not in path.parts:
+            return sid, _claude_model_from_transcript(str(path))
+    return sid, None
 
 
 def _claude_info_for_cwd(cwd: str, taken: set | None = None) -> tuple[str | None, str | None]:
@@ -700,9 +730,6 @@ def discover_agents(extra_matches: list[tuple] | None = None, now: float | None 
     extra_matches = extra_matches or []
     procs, children = _proc_table()
     agents = []
-    # Session ids already claimed in this pass, so two agents sharing one working directory
-    # cannot both be handed the newest transcript in it.
-    prirazena: set = set()
     for s in tmux_sessions():
         pids = _pane_pids(s["name"])
         tree = _subtree(pids, children)
@@ -720,13 +747,13 @@ def discover_agents(extra_matches: list[tuple] | None = None, now: float | None 
             model = rmodel or _model_from_argv(ranked)
             if model:
                 label = model
-        # Claude Code / Antigravity: a fresh launch has no id on argv — resolve the session id AND
-        # the concrete model by cwd, so both show up (just like Codex does).
+        # Claude Code records its session id by PID even when its process title hides argv.
         if kind == "claude-code":
             cwd = _session_cwd(s["name"])
-            csid, cmodel = _claude_info_for_cwd(cwd, prirazena) if cwd else (None, None)
-            if sid is None:
-                sid = csid
+            claude_pids = [p for p in tree if p in procs
+                           and procs[p].split()[0].rsplit("/", 1)[-1] == "claude"]
+            csid, cmodel = _claude_info_for_processes(claude_pids, cwd, sid)
+            sid = csid or sid
             # Transcript first — it reports the model actually in use (a session can be
             # switched with /model). argv is the fallback for a session young enough that
             # no transcript exists yet.
@@ -739,8 +766,6 @@ def discover_agents(extra_matches: list[tuple] | None = None, now: float | None 
             label = antigravity_label(amodel, sid, ranked, label)
         age = int(now - s["created"]) if s["created"] else None
         resume = RESUME_TEMPLATES.get(kind, "").format(id=sid) if (sid and kind in RESUME_TEMPLATES) else None
-        if sid:
-            prirazena.add(sid)
         agents.append({
             "name": s["name"], "kind": kind, "label": label, "session_id": sid,
             "vendor": vendor_for_agent(kind, label),

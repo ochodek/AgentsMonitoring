@@ -42,6 +42,8 @@ def main():
         run('cc', str(source), '-o', str(bins / 'codex'))
         shutil.copyfile(bins / 'codex', bins / 'codex-code-mode-host')
         (bins / 'codex-code-mode-host').chmod(0o700)
+        shutil.copyfile(bins / 'codex', bins / 'claude')
+        (bins / 'claude').chmod(0o700)
         env = os.environ.copy()
         env.update(HOME=str(root), PATH=str(bins) + os.pathsep + env['PATH'],
                    PYTHONPATH=str(package), AGENTSMON_CONFIG=str(root / 'config.json'),
@@ -74,6 +76,19 @@ def main():
                 paths.append(path)
                 tm('new-session', '-d', '-s', f'Gate{number}', '-c', str(root),
                    shlex.join([str(bins / 'codex-code-mode-host'), str(path), str(bins / 'codex')]))
+            claude_sessions = root / '.claude' / 'sessions'
+            claude_sessions.mkdir(parents=True)
+            claude_project = root / '.claude' / 'projects' / str(root).replace('/', '-')
+            claude_project.mkdir(parents=True)
+            claude_ids = ['33333333-3333-3333-3333-333333333333', '44444444-4444-4444-4444-444444444444']
+            claude_paths = []
+            for number, sid in enumerate(claude_ids):
+                path = claude_project / f'{sid}.jsonl'
+                path.write_text(json.dumps({'type': 'assistant', 'message': {'model': 'claude-opus-5'}}) + '\n')
+                claude_paths.append(path)
+                tm('new-session', '-d', '-s', f'GateClaude{number}', '-c', str(root), str(bins / 'claude'), str(path))
+                pid = int(tm('display-message', '-p', '-t', f'=GateClaude{number}:', '#{pane_pid}').stdout.strip())
+                (claude_sessions / f'{pid}.json').write_text(json.dumps({'pid': pid, 'sessionId': sid, 'cwd': str(root)}))
             with (root / 'dashboard.log').open('w') as output:
                 server = subprocess.Popen([sys.executable, '-m', 'agentsmon', 'dashboard'], cwd=root, env=env,
                                           stdin=subprocess.DEVNULL, stdout=output, stderr=output)
@@ -123,6 +138,17 @@ def main():
                 expect(second).to_contain_text(ids[1])
                 (hermes / 'config.yaml').write_text('model:\n  default: gpt-5.6-sol\n')
                 expect(daemon).to_contain_text('GPT-5.6 Sol', timeout=15000)
+                claude_first = page.locator('tr').filter(has=page.get_by_text('GateClaude0', exact=True))
+                claude_second = page.locator('tr').filter(has=page.get_by_text('GateClaude1', exact=True))
+                expect(claude_first).to_contain_text(claude_ids[0])
+                expect(claude_second).to_contain_text(claude_ids[1])
+                expect(claude_first).to_contain_text('Opus 5')
+                with claude_paths[0].open('a') as output:
+                    output.write(json.dumps({'type': 'assistant', 'message': {'model': 'claude-fable-5-1'}}) + '\n')
+                    output.write(json.dumps({'type': 'system', 'subtype': 'compact_boundary', 'content': 'x' * 200000}) + '\n')
+                    output.write(json.dumps({'type': 'user', 'message': {'model': 'claude-opus-5'}}) + '\n')
+                expect(claude_first).to_contain_text('Fable 5.1', timeout=15000)
+                expect(claude_second).to_contain_text('Opus 5')
                 assert '/static/tailwind.js' in assets, 'primary static asset missing'
                 assert not errors, errors
                 assert not failures, failures
