@@ -4,7 +4,7 @@
 set -euo pipefail
 cd "$PWD" 2>/dev/null || cd "$HOME" 2>/dev/null || cd /
 
-REPO="https://github.com/petrludwig-collab/AgentsMonitoring.git"
+REPO="https://github.com/ochodek/AgentsMonitoring.git"
 say() { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 err() { printf '\033[1;31mError:\033[0m %s\n' "$*" >&2; exit 1; }
 
@@ -42,7 +42,7 @@ else
   fetch_tarball() {
     say "Fetching the source archive (no git)"
     tmp="$(mktemp -d)"
-    url="https://codeload.github.com/petrludwig-collab/AgentsMonitoring/tar.gz/refs/heads/main"
+    url="https://codeload.github.com/ochodek/AgentsMonitoring/tar.gz/refs/heads/main"
     curl -fsSL --retry 2 "$url" -o "$tmp/src.tgz" || return 1
     tar xzf "$tmp/src.tgz" -C "$tmp" || return 1
     dir="$(find "$tmp" -maxdepth 1 -type d -name 'AgentsMonitoring-*' | head -1)"

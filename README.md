@@ -34,13 +34,13 @@ tmux sessions  ⇄  Agents Monitoring  ⇄  status page + keepalive
 ## Quick start
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/petrludwig-collab/AgentsMonitoring/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/ochodek/AgentsMonitoring/main/install.sh | bash
 ```
 
 …or from a clone:
 
 ```bash
-git clone https://github.com/petrludwig-collab/AgentsMonitoring.git
+git clone https://github.com/ochodek/AgentsMonitoring.git
 cd AgentsMonitoring
 python3 -m agentsmon setup
 ```

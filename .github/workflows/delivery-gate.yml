@@ -1,0 +1,23 @@
+name: Delivery gate
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+jobs:
+  test-built-dashboard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install browser and fixture tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tmux gcc
+          python -m pip install playwright
+          python -m playwright install --with-deps chromium
+      - name: Unit tests
+        run: python -m unittest discover -s tests
+      - name: Built wheel browser delivery gate
+        run: python scripts/browser_gate.py

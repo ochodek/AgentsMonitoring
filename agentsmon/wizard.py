@@ -370,12 +370,6 @@ def _daemon_entries(d: dict) -> tuple:
     tg = d.get("telegram") or detect.daemon_telegram_bot(d.get("name", ""))
     if tg:
         pinned["telegram"] = tg
-    model = detect.daemon_model(d["name"])
-    if model:
-        pinned["tag"] = model
-        v = detect.vendor_for_model(model)
-        if v:
-            pinned["vendor"] = v
     return daemon, pinned
 
 

@@ -193,15 +193,52 @@ def _session_cwd(name: str) -> str | None:
 
 
 def _rollout_model(path: str) -> str | None:
-    """The model a Codex session actually ran, from its rollout (turn_context records it even
-    when ~/.codex/config.toml doesn't set one). Reads only the head of the file."""
+    """Latest real turn model, scanning backwards with an 8 MiB read budget."""
     try:
-        with open(path, encoding="utf-8") as fh:
-            head = "".join(fh.readline() for _ in range(60))
+        with open(path, "rb") as fh:
+            pos = fh.seek(0, 2)
+            pending = b""
+            budget = 8 * 1024 * 1024
+            while pos and budget:
+                size = min(pos, budget, 65536)
+                pos -= size
+                budget -= size
+                fh.seek(pos)
+                lines = (fh.read(size) + pending).split(b"\n")
+                pending = lines.pop(0) if pos else b""
+                for line in reversed(lines):
+                    try:
+                        row = json.loads(line)
+                    except (ValueError, UnicodeError):
+                        continue
+                    if not isinstance(row, dict) or row.get("type") != "turn_context":
+                        continue
+                    model = (row.get("payload") or {}).get("model")
+                    if isinstance(model, str) and model:
+                        return _pretty_model(model)
     except OSError:
         return None
-    found = re.findall(r'"model"\s*:\s*"([^"]+)"', head)   # exact "model" key, not model_provider
-    return _pretty_model(found[-1]) if found else None
+    return None
+
+
+def _codex_info_for_processes(pids: list[int]) -> tuple[str | None, str | None]:
+    """Use the root rollout held open by this pane's Codex process."""
+    for path in open_files(pids):
+        if not Path(path).name.startswith("rollout-") or not path.endswith(".jsonl"):
+            continue
+        try:
+            with open(path, encoding="utf-8") as fh:
+                row = json.loads(fh.readline())
+        except (OSError, ValueError):
+            continue
+        if row.get("type") != "session_meta":
+            continue
+        meta = row.get("payload") or {}
+        source = meta.get("source")
+        if isinstance(source, dict) and "subagent" in source:
+            continue
+        return meta.get("id"), _rollout_model(path)
+    return None, None
 
 
 def _codex_info_for_cwd(cwd: str) -> tuple[str | None, str | None]:
@@ -661,7 +698,6 @@ def discover_agents(extra_matches: list[tuple] | None = None, now: float | None 
     now = now or time.time()
     extra_matches = extra_matches or []
     procs, children = _proc_table()
-    codex_model = _codex_model()
     agents = []
     # Session ids already claimed in this pass, so two agents sharing one working directory
     # cannot both be handed the newest transcript in it.
@@ -676,11 +712,11 @@ def discover_agents(extra_matches: list[tuple] | None = None, now: float | None 
         # For Codex: resolve the session id + the concrete model from its rollout (the rollout
         # records the model even when ~/.codex/config.toml doesn't); show the model as the label.
         if kind == "codex":
-            cwd = _session_cwd(s["name"])
-            rsid, rmodel = _codex_info_for_cwd(cwd) if cwd else (None, None)
-            if sid is None:
-                sid = rsid
-            model = rmodel or codex_model
+            codex_pids = [p for p in tree if p in procs
+                          and procs[p].split()[0].rsplit("/", 1)[-1] == "codex"]
+            rsid, rmodel = _codex_info_for_processes(codex_pids)
+            sid = rsid or sid
+            model = rmodel or _model_from_argv(ranked)
             if model:
                 label = model
         # Claude Code / Antigravity: a fresh launch has no id on argv — resolve the session id AND
