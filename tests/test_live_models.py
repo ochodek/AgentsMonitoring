@@ -13,6 +13,13 @@ def record(model):
 
 
 class LiveModels(unittest.TestCase):
+    def test_native_agent_wins_over_a_matching_helper_process(self):
+        import re
+        commands = ['/bin/codex-code-mode-host', 'codex resume 11111111-1111-1111-1111-111111111111']
+        custom = [('Master', 'GPT-5.5', re.compile('codex'))]
+        self.assertEqual(detect._classify(commands, custom),
+                         ('codex', 'Codex', '11111111-1111-1111-1111-111111111111'))
+
     def test_model_switch_after_long_history_wins_over_initial_model_and_tool_text(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'rollout.jsonl'

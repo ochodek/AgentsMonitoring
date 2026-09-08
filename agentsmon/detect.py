@@ -570,6 +570,7 @@ def _classify(cmds: list[str], extra_matches: list[tuple]) -> tuple[str, str, st
             if pat.search(cmd):
                 sid = UUID_RE.search(cmd)
                 return kind, label, (sid.group(0) if sid else None)
+    for cmd in cmds:
         for kind, label, pat in extra_matches:
             if pat.search(cmd):
                 sid = UUID_RE.search(cmd)

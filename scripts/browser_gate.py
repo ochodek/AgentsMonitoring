@@ -38,8 +38,10 @@ def main():
         wrapper.write_text('#!/bin/sh\nexec ' + shlex.quote(real_tmux) + ' -L ' + tmux_socket + ' -f /dev/null "$@"\n')
         wrapper.chmod(0o700)
         source = root / 'fixture.c'
-        source.write_text('#include <fcntl.h>\n#include <unistd.h>\nint main(int argc, char **argv) { if (argc != 2 || open(argv[1], O_RDONLY) < 0) return 2; for (;;) pause(); }\n')
+        source.write_text('#include <fcntl.h>\n#include <unistd.h>\nint main(int argc, char **argv) { if (argc == 3) { if (fork() == 0) { execl(argv[2], argv[2], argv[1], (char *)0); return 3; } } else if (argc != 2 || open(argv[1], O_RDONLY) < 0) return 2; for (;;) pause(); }\n')
         run('cc', str(source), '-o', str(bins / 'codex'))
+        shutil.copyfile(bins / 'codex', bins / 'codex-code-mode-host')
+        (bins / 'codex-code-mode-host').chmod(0o700)
         env = os.environ.copy()
         env.update(HOME=str(root), PATH=str(bins) + os.pathsep + env['PATH'],
                    PYTHONPATH=str(package), AGENTSMON_CONFIG=str(root / 'config.json'),
@@ -55,6 +57,7 @@ def main():
         config = {'dashboard': {'host': '127.0.0.1', 'port': port, 'poll_seconds': 1},
                   'modules_dir': str(root / 'no-modules'), 'services': [],
                   'keepalive': {'enabled': False},
+                  'agents': [{'name': 'Gate0', 'match': 'codex', 'label': 'GPT-5.5'}],
                   'pinned_daemons': [{'name': 'Hermes', 'process': 'agentsmon-nonexistent-gate-daemon'}]}
         (root / 'config.json').write_text(json.dumps(config))
         hermes = root / '.hermes'
@@ -70,7 +73,7 @@ def main():
                                 json.dumps({'type': 'turn_context', 'payload': {'model': model}}) + '\n')
                 paths.append(path)
                 tm('new-session', '-d', '-s', f'Gate{number}', '-c', str(root),
-                   shlex.join([str(bins / 'codex'), str(path)]))
+                   shlex.join([str(bins / 'codex-code-mode-host'), str(path), str(bins / 'codex')]))
             with (root / 'dashboard.log').open('w') as output:
                 server = subprocess.Popen([sys.executable, '-m', 'agentsmon', 'dashboard'], cwd=root, env=env,
                                           stdin=subprocess.DEVNULL, stdout=output, stderr=output)
